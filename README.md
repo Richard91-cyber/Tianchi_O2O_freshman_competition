@@ -1,36 +1,240 @@
-# Tianchi_O2O_freshman_competition
-天池O2O新手赛    AUC=0.7961 排名前段时间有30+，现在估计40+，随着后面越来越多人提交且结果会越来越好，如果不持续做的话排名会掉的.目前第一名的AUC有0.811+
+# Tianchi O2O Coupon Redemption Prediction
 
-     Data_preprocess.py 数据预处理部分，包括数据集打标和数据集划分;
-     feat_section.py    特征区间的特征工程代码
-     label_section.py   预测区间的特征工程代码
-     time_gap_count.py  预测区间的某些时间差特征和leak特征
-     model.py           xgb,lgb模型训练和使用RFE做特征选择
+> Predicting whether a user will redeem a coupon within 15 days of receiving it, using offline O2O (online-to-offline) transaction logs. Built for the **Tianchi O2O Freshman Competition (天池 O2O 新手赛)**.
 
-## 一.数据集划分
-   使用时间窗口划分法划分数据
-   
-   | |特征区间|预测区间|
-   |:---|:---|:---|
-   |测试集|20160501~20160630|20160701~20160731|
-   |训练集|20160401~20160531|20160601~20160630|
-   |验证集|20160301~20160430|20160501~20160530|
-   
-   其中训练集与线下验证集可以做交叉验证。最后对测试集做预测时，将训练集与验证集合并一起预测
-   
- ## 二.特征工程
-   特征工程的重点是构建用户，商家，优惠券三大特征群，以及 用户-商家，用户-优惠券，商家-优惠券 三个交叉特征群。
-   每个特征群主要特征有：
-   
-   统计特征（最大/最小/平均值/比率 等）  
-   排序特征（各个实体对时间，距离，折扣率等的排序）  
-   时间特征（日期，时间差等）  
-   
-   预测区间的特征特征区间的特征的相关性较强，因为对于此类时间序列相关的问题，越靠近预测时间，特征的相关性越强，并且，预测区间还有leakage特征可以用来上分，即使用未来的数据。当然，仅限于比赛使用，实际业务中是无法使用的。
-   
-## 三.模型训练
-   模型主要是使用lgb模型，较快，大概5分钟。xgboost的精度较高，但是训练时间太长，大概30+分钟.
-   
-   P.S 一些个人见解：从用户画像的角度来看，统计特征和组合特征，主要分别刻画了用户，商家，优惠券的行为，比如，用户领券次数，商家的热度，优惠券的流行度等等。但是，排序特征，更多地从时间角度，和用户心理角度去考虑。比如说，距离领券时间越近，消费的欲望越强，因为如果领取了优惠券而迟迟没有消费，可能用户本身也忘记了这张优惠券的存在。同时，还有对距离的排序，线下商家与用户的距离越近，肯定要比远的商家消费的概率要大的。不可否认，距离本身也是一种排序。但为什么另外写了一个基于距离的排序特征，排序特征的重要性要比距离的重要性要强呢？我觉得应该和算法本身有关的。xgboost里的树模型在做分裂的时候，选取特征是有一个打分函数决定的，分值越高，信息增益越大。特征分裂时，并不是简单地按照样本个数选取分位点，而是，将特征转换为二阶导数值，再去选取分位点。连续均匀值比连续不均匀值信息增益要好。我觉得是因为，泰勒一阶与二阶展开式带有非线性项（二次项），数值的选取对其信息增益的计算会造成剧烈的扰动。而且，特征转换的本身，也是将目标函数引导到另一个特征取值更加平滑的解空间，更有利于求得最优解。
- 
- 持续更新...
+***
+
+## 📌 Overview
+
+| Item               | Detail                                                                             |
+| ------------------ | ---------------------------------------------------------------------------------- |
+| **Competition**    | Tianchi O2O Freshman Competition (阿里天池 O2O 新手赛)                                    |
+| **Host**           | Alibaba / Tianchi                                                                  |
+| **Task Type**      | Binary classification on coupon redemption logs                                    |
+| **Target**         | Will a user redeem a received coupon within 15 days?                               |
+| **Metric**         | AUC (Area Under the ROC Curve)                                                     |
+| **Score**          | AUC ≈ 0.7961 (leaderboard rank \~30–40 at submission time)                         |
+| **Core Technique** | Hand-crafted statistical / ranking / time-gap features + GBDT (XGBoost / LightGBM) |
+| **Language**       | Python (pandas / numpy / xgboost / lightgbm / scikit-learn)                        |
+
+***
+
+## 🧠 Problem Statement
+
+In O2O commerce, platforms distribute coupons to drive offline store visits. Not every received coupon gets redeemed — users forget, choose other merchants, or find the distance too far. Predicting redemption probability lets the platform target high-intent users and optimize coupon allocation.
+
+The challenge:
+
+1. **Sparse labels** — only a fraction of received coupons are redeemed; classes are imbalanced.
+2. **Cold-start entities** — users, merchants, and coupons may have very few historical interactions.
+3. **Temporal dynamics** — redemption intent decays with time since receipt; features must capture this.
+
+***
+
+## 📂 Dataset
+
+A single offline training file `ccf_offline_stage1_train.csv` with the following schema:
+
+| Column          | Description                                                               |
+| --------------- | ------------------------------------------------------------------------- |
+| `User_id`       | Anonymized user ID                                                        |
+| `Merchant_id`   | Anonymized merchant ID                                                    |
+| `Coupon_id`     | Coupon ID (null when no coupon involved)                                  |
+| `Discount_rate` | Discount string — either `"X:Y"` (reduce X off Y) or a ratio like `"0.5"` |
+| `Distance`      | User–merchant physical distance tier (0–10, null = unknown)               |
+| `Date_received` | Day the coupon was received (null if no coupon)                           |
+| `Date`          | Day a purchase was made (null if no purchase)                             |
+
+A separate test file `ccf_offline_stage1_test_revised.csv` provides the coupon-receipt records to predict on.
+
+***
+
+## 🏗️ Solution Architecture
+
+```
+        ┌────────────────────────────────────────────────┐
+        │       ccf_offline_stage1_train.csv (raw)       │
+        └──────────────────────────┬─────────────────────┘
+                                   │
+                       ┌───────────▼────────────┐
+                       │  Data_preprocess.py     │
+                       │  • Label: redeemed ≤15d│
+                       │  • Discount parsing     │
+                       │  • Time-window split   │
+                       └───────────┬────────────┘
+                                   │
+            ┌──────────────────────┴──────────────────────┐
+            │                                             │
+   ┌────────▼─────────┐                       ┌──────────▼──────────┐
+   │  feat_section.py │  feature window      │ label_section.py    │  prediction window
+   │  (past behavior)  │                       │  (current behavior) │
+   └────────┬─────────┘                       └──────────┬──────────┘
+            │                                            │
+            │           ┌────────────────────┐           │
+            └──────────►│ time_gap_count.py  │◄──────────┘
+                        │  • inter-event gaps│
+                        │  • before/after cnt│
+                        │  • leak features   │
+                        └─────────┬──────────┘
+                                   │
+                          ┌────────▼────────┐
+                          │  ~200+ features  │
+                          └────────┬────────┘
+                                   │
+                          ┌────────▼────────┐
+                          │   model.py       │
+                          │  • RFE selection │
+                          │  • XGBoost / LGB │ ← AUC evaluation
+                          └────────┬────────┘
+                                   │
+                          ┌────────▼────────┐
+                          │  lgb.csv / xgb  │ → submission
+                          └─────────────────┘
+```
+
+***
+
+## 🔧 Feature Engineering (Core Contribution)
+
+The project builds **three primary feature groups** (user / merchant / coupon) plus **three cross groups** (user×merchant, user×coupon, merchant implicitly via coupon). For every entity, features are computed in three slices: **received / redeemed / not-redeemed**, yielding count, unique-count, and ratio signals.
+
+### 1. User Features (`feat_section.py` / `label_section.py`)
+
+- Coupon counts & types: received, redeemed, dropped, redeem-ratio, coupon-type diversity
+- Merchant diversity: unique merchants received-from / redeemed-with, redeem-ratio, coverage vs. all merchants
+- Distance stats: max / min / mean for received, redeemed, and dropped coupons
+- Discount stats: max / min / mean of `dis_left`, `dis_right`, and `dis_rate` across all three slices
+- Discount-range bucketing: counts in `0–50`, `50–200`, `200–500` left-value bands
+
+### 2. Merchant Features
+
+- Mirror of user features, from the merchant's perspective: coupons received/redeemed/dropped, user reach, distance & discount stats
+
+### 3. Coupon Features
+
+- Reach & redemption counts, unique users per coupon, distance statistics
+
+### 4. Cross Features
+
+- **User × Merchant**: co-occurrence counts, redeem ratio, share of user's total redeems, share of user's total drops
+- **User × Coupon**: same pattern — a strong personalization signal
+
+### 5. Ranking Features (`label_section.py`)
+
+Per entity (and per entity pair), ascending & descending ranks over:
+
+- `distance` — closer merchants rank higher
+- `date_received` — recent receipts rank higher
+- `dis_left` / `dis_right` — bigger discounts rank higher
+
+These ranks are computed within each user's / merchant's / coupon's own sample set. The README's author notes that **ranking features outperform the raw distance/discount values** for XGBoost — likely because the split-score function operates on second-order-derivative quantiles, and monotone ranks produce smoother, more evenly distributed split candidates than raw values.
+
+### 6. Time-Gap Features (`time_gap_count.py`)
+
+For each record and each of (user, merchant, coupon), compute:
+
+- Max / min / mean / median gap between consecutive events of the same entity
+- Gap from current record to the entity's first and last events
+- Previous-event gap and next-event gap
+- Before/after counts and ratios for merchants & coupons (these are **leak features** — they peek at future events within the prediction window; competition-only)
+
+### 7. Calendar Features
+
+- Weekend / Saturday / Sunday / weekday indicators
+- First / second / third ten-day-of-month indicators
+- Holiday flags: May 1 (Labor Day), June 1 (Children's Day), June 9 (Dragon Boat), May 8 (Mother's Day), June 19 (Father's Day), June 21 (Summer Solstice)
+
+### Design Principles
+
+- **Three-slice decomposition** — every statistic is split into received / redeemed / dropped, capturing both intent and abandonment signals.
+- **Cross-entity personalization** — user×merchant and user×coupon interactions encode "this user's behavior *with this specific partner*."
+- **Ranking > raw value** — rank transforms stabilize the tree-split scoring (hypothesis documented in the original README).
+- **Multi-temporal granularity** — feature-window stats for long-term habits, prediction-window stats for recent intent, time-gaps for intra-window dynamics.
+
+***
+
+## 🤖 Modeling (`model.py`)
+
+Two GBDT models are trained; LightGBM is preferred for speed, XGBoost for precision.
+
+| Model        | `eta` / `lr` | `num_boost_round` | Use                                           |
+| ------------ | ------------ | ----------------- | --------------------------------------------- |
+| **XGBoost**  | 0.01         | 1200              | Higher-precision submissions (\~30 min train) |
+| **LightGBM** | 0.01         | 800               | Fast iteration (\~5 min train)                |
+
+Shared XGBoost hyperparameters: `subsample=0.8`, `colsample_bytree=0.8`, `min_child_weight=18`, `objective=binary:logistic`, `eval_metric=auc`.
+
+### Feature Selection
+
+- Uses **Recursive Feature Elimination (RFE)** from scikit-learn, driven by an `XGBClassifier`, to select the top 180 features.
+- The selected feature list is saved to `feat_select.csv` and reused by both trainers — removing noisy features improves AUC and reduces overfitting on cold-start entities.
+
+### Output
+
+- LightGBM probabilities are scaled by 0.98 to calibrate against the public leaderboard distribution.
+- Submissions are written as `User_id, Coupon_id, Date_received, Probability`.
+
+***
+
+## ⏱️ Validation Strategy
+
+A **time-based sliding window** (not random K-fold) — essential for temporal data:
+
+| Split                  | Feature Window          | Prediction Window       |
+| ---------------------- | ----------------------- | ----------------------- |
+| **Train**              | 2016-04-01 → 2016-05-31 | 2016-06-01 → 2016-06-30 |
+| **Validation**         | 2016-03-01 → 2016-04-30 | 2016-05-01 → 2016-05-30 |
+| **Test (leaderboard)** | 2016-05-01 → 2016-06-30 | 2016-07-01 → 2016-07-31 |
+
+For the final leaderboard submission, the train and validation sets are merged to maximize training data. Train and validation can be cross-validated offline; the test split respects strict temporal ordering to prevent leakage.
+
+***
+
+## ⚙️ Engineering Highlights
+
+- **Modular pipeline** — each phase (preprocessing, feature-window, prediction-window, time-gaps, modeling) is a standalone module, making it easy to swap feature groups or models.
+- **Vectorized aggregations** — `pd.pivot_table` with custom `getcount` / `getset` aggfuncs computes per-entity stats in a single pass.
+- **List-comprehension iteration** — `time_gap_count.py` uses list comprehensions over `iterrows()` instead of Python loops, dramatically speeding up the per-row feature computation.
+- **Memory-aware I/O** — intermediate feature tables are persisted to CSV per split (`train/feat.csv`, `val/label.csv`, etc.), allowing the expensive feature step to run once and models to iterate quickly.
+- **Feature selection artifact** — RFE output is cached to `feat_select.csv` and reloaded by both models, keeping train and test feature spaces perfectly aligned.
+
+***
+
+## 📁 Project Structure
+
+```
+github/
+├── Data_preprocess.py     # Labeling, discount parsing, time-window splitting
+├── feat_section.py        # Feature-window features (user / merchant / coupon / cross)
+├── label_section.py       # Prediction-window features + ranking + calendar features
+├── time_gap_count.py      # Inter-event time gaps and leak features
+├── model.py               # XGBoost / LightGBM training + RFE feature selection
+└── README.md              # This file
+```
+
+External data files (not committed) sit in the parent directory and are referenced via `r'..\xxx.csv'`:
+
+```
+../
+├── ccf_offline_stage1_train.csv         # Raw training data
+├── ccf_offline_stage1_test_revised.csv  # Leaderboard test receipts
+├── row_train.csv                        # Labeled output of mk_label()
+├── train.csv / val.csv                  # Engineered feature tables
+├── feat_select.csv                      # RFE-selected feature list (top 180)
+└── lgb.csv / xgb.csv                    # Submission files
+```
+
+***
+
+## 📝 Key Takeaways
+
+- **Three-slice decomposition (received / redeemed / dropped)** is a high-leverage pattern for conversion-style problems — it turns a single count into an intent signal.
+- **Ranking features beat raw values** for tree models — the hypothesis (documented in the original notes) is that rank-transformed features produce smoother second-order-derivative quantiles during tree splitting, yielding larger information gain. This is a useful mental model for feature engineering on GBDT.
+- **Leakage features (future events within the prediction window)** provide an easy AUC bump in competitions but are **not** deployable in production. Worth flagging explicitly to avoid copying this pattern into real systems.
+- **RFE + LightGBM** is a fast, reproducible combo: RFE prunes noisy features once, then LightGBM iterates in minutes rather than the 30+ minutes XGBoost requires.
+
+***
+
+## 📜 License
+
+Personal project for educational and portfolio purposes. Dataset © Alibaba / Tianchi competition organizers.
